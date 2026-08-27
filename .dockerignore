@@ -1,0 +1,36 @@
+# Keep the build context lean and NEVER bake secrets into the image.
+.git
+.gitignore
+.github
+
+# Local env + secrets (backend/.env holds the YouTube API key)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Python
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+
+# Node / frontend
+**/node_modules
+**/dist
+**/.vite
+**/*.tsbuildinfo
+frontend/node_modules
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+
+# Runtime
+.logs
+opencode.db*

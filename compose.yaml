@@ -1,0 +1,28 @@
+# Local development PostgreSQL for the Friday Karaoke backend.
+#
+# The full production deployment (frontend + backend + db + reverse proxy)
+# is milestone M20. This compose file only provides the development database
+# that M2+ needs.
+#
+# Usage:
+#   docker compose up -d db
+#   cd backend && uv run alembic upgrade head
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: karaoke
+      POSTGRES_PASSWORD: karaoke
+      POSTGRES_DB: karaoke
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U karaoke -d karaoke"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db_data:

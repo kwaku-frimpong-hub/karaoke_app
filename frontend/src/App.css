@@ -1,0 +1,489 @@
+/* Component styles (frontend-ui skill). Colors/spacing/type come from the
+   tokens in index.css; never hard-code values here. The backend owns all
+   state; these styles only shape what it returns. */
+
+/* --- Layout -------------------------------------------------------------- */
+
+.screen {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error-text {
+  color: var(--danger-text);
+}
+
+.warn-text {
+  color: var(--warn);
+}
+
+/* --- Top bar ------------------------------------------------------------- */
+
+.auth-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.auth-header h1 {
+  margin: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.topbar a {
+  color: inherit;
+  font-weight: 600;
+}
+
+.session-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Typography ---------------------------------------------------------- */
+
+h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+
+h2,
+h3 {
+  margin: 0.25rem 0;
+}
+
+/* --- Inputs -------------------------------------------------------------- */
+
+input[type='text'],
+input[type='url'],
+input[type='email'],
+input[type='password'] {
+  min-height: 48px;
+  padding: 0.75rem 0.9rem;
+  font-size: var(--text-base);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: inherit;
+  width: 100%;
+}
+
+input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* --- Buttons ------------------------------------------------------------- */
+
+button {
+  min-height: 48px;
+  padding: 0.7rem 1.1rem;
+  font-size: var(--text-base);
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: none;
+  background: var(--primary);
+  color: var(--primary-ink);
+  cursor: pointer;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+
+/* Link styled as a button (use instead of nesting <button> inside <a>). */
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0.7rem 1.1rem;
+  font-size: var(--text-base);
+  font-weight: 600;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--primary-ink);
+  text-decoration: none;
+}
+
+.button-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button.danger {
+  background: var(--danger);
+  color: var(--on-danger);
+}
+
+button.link-button {
+  background: none;
+  border: none;
+  color: var(--danger-text);
+  padding: 0;
+  min-height: 0;
+  font-weight: 500;
+  text-decoration: underline;
+}
+
+/* --- Badges -------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.badge-created {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+
+.badge-active {
+  background: var(--active-bg);
+  color: var(--active-text);
+}
+
+.badge-paused {
+  background: var(--paused-bg);
+  color: var(--paused-text);
+}
+
+.badge-round {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.badge-ended {
+  background: var(--ended-bg);
+  color: var(--ended-text);
+}
+
+/* --- Cards --------------------------------------------------------------- */
+
+.card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 1rem;
+}
+
+.card.highlight {
+  border-color: var(--primary);
+}
+
+.card.success {
+  border-color: var(--success);
+}
+
+.queue-loading-card,
+.host-loading-card {
+  border-style: dashed;
+}
+
+.label {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.thumb {
+  width: 100%;
+  border-radius: 10px;
+  margin-bottom: 0.5rem;
+}
+
+/* --- Lists --------------------------------------------------------------- */
+
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.queue-list li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.queue-list li.mine {
+  border-color: var(--primary);
+  background: var(--surface-2);
+}
+
+.position {
+  min-width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+/* --- Host dashboard (M9) — projector/TV-friendly ------------------------- */
+
+.host-dashboard {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.host-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+
+.host-title h1 {
+  font-size: var(--text-2xl);
+}
+
+.host-join {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.host-join .qr {
+  width: 7.5rem;
+  height: 7.5rem;
+  background: var(--qr-bg);
+  padding: 0.35rem;
+  border-radius: var(--radius);
+}
+
+.host-join-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.join-code {
+  font-size: var(--text-display);
+  letter-spacing: 0.12em;
+  color: var(--active-text);
+}
+
+.join-url {
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.host-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.host-now {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.host-now .card h2 {
+  font-size: var(--text-xl);
+}
+
+.host-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.host-actions button {
+  font-size: 1.1rem;
+  min-height: 52px;
+}
+
+.host-actions button[disabled] {
+  opacity: 0.45;
+}
+
+.host-queue li {
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.host-queue .entry-actions {
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+
+.host-queue .entry-actions button {
+  min-height: 40px;
+  font-size: 0.9rem;
+}
+
+.host-edit {
+  margin-top: 0.5rem;
+}
+
+.host-ended h2 {
+  margin-bottom: 1rem;
+}
+
+/* --- YouTube host player (M12) -------------------------------------------- */
+
+.player {
+  position: relative;
+  margin-top: 0.75rem;
+}
+
+.player-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-width: 640px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.player-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.player-placeholder {
+  position: absolute;
+  inset: 0;
+  max-width: 640px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+  background: var(--surface);
+}
+
+.player-status {
+  margin-top: 0.5rem;
+}
+
+.transition-note {
+  margin-top: 0.5rem;
+}
+
+/* --- In-app notification banner (M15) ---------------------------------------- */
+
+.notify {
+  border-color: var(--primary);
+  background: var(--surface-2);
+}
+
+/* --- Leave session (participant) ---------------------------------------------- */
+
+.leave-session {
+  margin-top: var(--space-5);
+}
+
+/* --- Home (session list) ------------------------------------------------- */
+
+.home-list li {
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.home-list .home-open {
+  margin-left: auto;
+}
+
+@media (max-width: 60rem) {
+  .host-main {
+    grid-template-columns: 1fr;
+  }
+}
