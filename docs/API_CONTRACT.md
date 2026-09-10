@@ -230,6 +230,9 @@ and is served as an SVG at `GET /api/v1/sessions/{id}/qr` (owning host).
 | POST   | /api/v1/sessions/{id}/entries/preview    | participant | Validate URL + return metadata preview (M6) |
 | POST   | /api/v1/sessions/{id}/entries            | participant | Submit song (create WAITING entry) (M7)  |
 | GET    | /api/v1/sessions/{id}/entries            | none        | Queue snapshot (public, sanitized) (M7)  |
+| GET    | /api/v1/sessions/{id}/participants       | host        | Host participant playlist management     |
+| POST   | /api/v1/sessions/{id}/participants       | host        | Host creates a participant by nickname   |
+| POST   | /api/v1/sessions/{id}/participants/{participantId}/entries | host | Host adds a song for that participant |
 | DELETE | /api/v1/entries/{entryId}                | participant *or* host | Cancel own WAITING / host remove (M7) |
 | PATCH  | /api/v1/entries/{entryId}/video          | host        | Host replaces the YouTube URL (M7)       |
 
@@ -256,7 +259,11 @@ POST /api/v1/sessions/{id}/entries            Authorization: Bearer <participant
 The entry is assigned to a round at submission (D43): the current round when the
 participant has no non-terminal entry there, otherwise the next round above their
 highest round. `position` is `null` for future-round entries (not yet in the
-active queue).
+active queue). Submit normally uses YouTube Data API metadata; if the Data API
+quota/rate limit is exhausted, submit falls back to keyless oEmbed metadata and
+still returns 201 with `duration_seconds: 0` until a later successful Data API
+fetch refreshes the stored video row. The preview endpoint remains strict because
+duration is required for the long-video warning.
 
 ### Queue snapshot (M7, round-scoped at M10.1, summaries at M16)
 
@@ -270,6 +277,8 @@ GET /api/v1/sessions/{id}/entries                # public, no auth
   "playback_state": "PLAYING",                   # stored (M13, D47)
   "transition_until": null,                      # transition deadline (M13)
   "transition_remaining_seconds": null,          # countdown display (M13)
+  "cooldown_seconds": 10,                        # per-session timing (M13/D54)
+  "countdown_seconds": 20,                       # per-session timing (M13/D54)
   "participants": [ { "nickname": "Alice", "remaining_songs": 2 }, ... ],  # M16
   "queue": [ { ...QueueEntryResponse as above, "position": 1 }, ... ]
 }                                                # current round, stable participant order (D43)
@@ -281,7 +290,10 @@ participant order (each participant's earliest submission time; decision D43);
 future-round songs are not part of the snapshot and have no position. There is no
 mutable position field. `rounds_completed` counts the rounds fully played and
 `participants` the per-participant remaining-song counts (M16). The snapshot is
-sanitized (no host identity, no participant tokens).
+sanitized (no host identity, no participant tokens). `cooldown_seconds` and
+`countdown_seconds` are exposed so clients can render temporary optimistic
+transition UI while awaiting the next authoritative snapshot; backend deadlines
+remain authoritative.
 
 ### Session summary (M16)
 
@@ -295,6 +307,47 @@ GET /api/v1/sessions/{id}/summary                Authorization: Bearer <host tok
 }
 404 { "detail": "session not found" }             # unknown or another host's
 ```
+
+### Host participant playlists + assisted submission
+
+```text
+GET /api/v1/sessions/{id}/participants        Authorization: Bearer <host token>
+200 [
+  {
+    "id": "...",
+    "session_id": "...",
+    "nickname": "Nina",
+    "created_at": "...",
+    "entries": [
+      { "id": "...", "round_number": 1, "position": 2, "status": "WAITING",
+        "video_id": "dQw4w9WgXcQ", "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "title": "Never Gonna Give You Up", "channel": "Rick Astley",
+        "duration_seconds": 213, "thumbnail_url": "...", "created_at": "..." }
+    ]
+  }
+]
+
+POST /api/v1/sessions/{id}/participants        Authorization: Bearer <host token>
+{ "nickname": "Nina" }
+201 { "id": "...", "session_id": "...", "nickname": "Nina", "created_at": "..." }
+409 { "detail": "nickname 'Nina' is already taken" }
+
+POST /api/v1/sessions/{id}/participants/{participantId}/entries
+Authorization: Bearer <host token>
+{ "youtube_url": "https://youtu.be/dQw4w9WgXcQ" }
+201 { ...SongSubmitResponse... }
+404 { "detail": "participant not found" }
+409 { "detail": "this karaoke night has ended" }   # or per-participant cap B15
+422 { "detail": "that doesn't look like a valid YouTube link" }
+```
+
+These are host-assist endpoints for singers without a phone. They do not expose a
+participant token. Host-created participants use the same nickname rules as
+QR-created participants but are not absence-tracked (`last_connected_at = null`),
+because they have no WebSocket presence to refresh; QR-created participants still
+use normal absent cleanup. Playlist lists only non-terminal queued songs;
+already-sung history remains covered by the session summary. Host add uses the
+same quota-degraded oEmbed fallback as participant submit.
 
 ### Cancel / remove / edit (M7)
 

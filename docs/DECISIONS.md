@@ -795,6 +795,11 @@ These freeze MVP product behavior. They were captured in `docs/PRODUCT_SPEC.md`.
   cleanup on snapshot render avoids background timers entirely (consistent with
   D47) while guaranteeing the authoritative state never shows ghost entries.
   The write is idempotent and only fires when stale participants exist.
+- **Clarification (post-D52):** `last_connected_at = NULL` means the participant
+  is not presence-tracked and is therefore not considered absent by this cleanup.
+  This is used for host-created/no-phone participants, because they have no
+  client WebSocket to refresh presence; QR-created participants still set and
+  refresh `last_connected_at` normally.
 - **Rejected:** A periodic background sweep task (restart/multi-worker fragility,
   D47 spirit); heartbeat pings from clients (extra protocol); treating absence as
   immediate (network blips would wrongly cancel songs — the window absorbs
@@ -816,9 +821,11 @@ These freeze MVP product behavior. They were captured in `docs/PRODUCT_SPEC.md`.
   429 when exceeded. The YouTube service gains an in-process TTL metadata cache
   (`KARAOKE_YOUTUBE_CACHE_TTL_SECONDS`, default 1 h) so repeated previews/
   submissions of the same video cost one Data API call instead of many —
-  protecting the free key's daily quota (D33). Sessions are intentionally
-  **retained** (no auto-deletion): ENDED is terminal, and a retention/cleanup
-  policy is an ops decision for M22, not a v1 feature.
+  protecting the free key's daily quota (D33). YouTube quota/rate-limit errors
+  are reported distinctly as HTTP 503 instead of being collapsed into the
+  user-facing "video unavailable" 404. Sessions are intentionally **retained**
+  (no auto-deletion): ENDED is terminal, and a retention/cleanup policy is an
+  ops decision for M22, not a v1 feature.
 - **Rationale:** The realistic threats to a public QR code are join flooding and
   YouTube quota exhaustion via preview/submit spam; both are cheaply bounded
   in-process (D9 — single worker, no Redis). The existing defenses already
@@ -886,6 +893,96 @@ These freeze MVP product behavior. They were captured in `docs/PRODUCT_SPEC.md`.
   are unused, so we can revisit keyless later.
 - **Rejected:** continuing to debug WIF's getAccessToken impersonation (blocked on
   external IAM behavior, multiple failed runs); committing a key to the repo (never).
+
+## D52. Host-assisted participants and queued playlists
+
+- **Status:** Accepted
+- **Decision:** Add a separate host participant-management screen and host-only
+  endpoints under `/api/v1/sessions/{id}/participants`. The host can list every
+  participant with their non-terminal queued playlist, create a participant by
+  nickname, and add a YouTube song directly to a participant. The main playback
+  dashboard only gains a navigation link so its core control layout remains stable.
+- **Rationale:** Friday-night reality includes singers who forgot a phone or do
+  not want to use one. The host is already the final authority, and the host's
+  browser is the playback device, so letting the host create a session-scoped
+  participant and submit songs on their behalf preserves the backend/database as
+  the source of truth while avoiding paper/manual queue work.
+- **Cleanup rule (revised after live feedback):** Host-created/no-phone
+  participants are **not absence-tracked**: `last_connected_at` is stored as
+  `NULL`, so lazy absent cleanup leaves their WAITING songs alone. QR-created
+  participants still set `last_connected_at` on join and refresh it on realtime
+  connect, so normal absent cleanup remains in place for phone participants.
+  Rationale: no-phone singers have no WebSocket presence to refresh, and the
+  host is explicitly managing them; treating them like disconnected phones made
+  host-added songs vanish after the cleanup window.
+- **Trade-off (accepted):** the no-phone participant does not receive their raw
+  participant token and cannot later manage/cancel their own entries from a phone
+  unless they join separately with a different nickname; the host can still remove
+  or edit entries from the host surfaces.
+- **Rejected:** changing the main dashboard into a large participant-management
+  UI; preview-before-add for the host path (extra tap and extra YouTube quota
+  call). The earlier rejection of exempting host-created participants from
+  absent cleanup was reversed after real-use testing showed it made host-added
+  songs disappear.
+
+---
+
+## D53. Optimistic song-add UX with keyless oEmbed metadata
+
+- **Status:** Accepted
+- **Decision:** Song-add surfaces use a local-first optimistic UX while preserving
+  D2 backend/database authority. The frontend validates/extracts supported
+  YouTube IDs, fetches keyless oEmbed metadata directly for instant
+  title/channel/thumbnail display when available, stores only non-authoritative
+  video metadata in localStorage, and renders temporary `syncing`/`failed` rows
+  through a shared queue overlay. Client-side oEmbed is best-effort: if YouTube
+  returns 401/404/CORS/network failure, the frontend still shows a generic
+  `Song syncing…` optimistic row and lets the backend submit decide. Participant
+  submit and host participant add still POST to the backend in the background;
+  REST/WebSocket snapshots reconcile the optimistic rows and provide
+  authoritative position, round, duplicate notice, playback, and persistence
+  state.
+- **Backend metadata fallback:** Submit paths normally use the YouTube Data API.
+  If quota/rate limits are exhausted, participant submit and host participant add
+  fall back to server-side oEmbed metadata and still queue the song with
+  `duration_seconds=0`. Preview remains strict because its job is to provide the
+  duration-based long-video warning. A later successful Data API fetch refreshes
+  a previously oEmbed-only video row with real duration/display metadata.
+- **Rationale:** Real school use needs adding songs to feel instant and not fail
+  just because the Data API quota is temporarily exhausted. oEmbed is keyless and
+  quota-free but lacks duration, so the frontend can use it for fast display while
+  the backend retains authority over ordering, rounds, limits, identity, sockets,
+  and durable persistence.
+- **Rejected:** A truly client-authoritative queue with the backend as a dumb
+  relay (would lose refresh/crash durability and create ordering conflicts);
+  keeping the blocking Preview -> Add double round-trip; rejecting songs solely
+  because duration could not be fetched.
+
+---
+
+## D54. Optimistic playback and moderation snapshot overlay
+
+- **Status:** Accepted
+- **Decision:** Host playback/moderation actions and participant cancellation use
+  the same temporary optimistic-overlay model as D53. The frontend keeps the last
+  authoritative `QueueSnapshot` from REST/WebSocket and may render a predicted
+  snapshot immediately for start/end/finish/skip/advance/pause/resume, host
+  remove/reorder/edit, session start/end, and participant cancel. The HTTP
+  mutation still runs in the background; the next authoritative snapshot replaces
+  the optimistic one, and a failed mutation clears the overlay to revert the UI
+  and surface an error. Snapshot payloads now expose `cooldown_seconds` and
+  `countdown_seconds` so optimistic transition deadlines match per-session
+  configuration.
+- **Rationale:** During a live performance, a host pressing **Finish** or
+  **Skip** needs the projector UI to move immediately even if the school network
+  adds latency. This is a UI responsiveness layer only: backend/database remains
+  authoritative for queue order, statuses, rounds, playback, permissions,
+  identity, and persistence; WebSockets/polling reconcile any prediction drift.
+- **Trade-off:** The client mirrors a small part of the playback state machine for
+  display, so rare edge cases (round boundaries, another tab acting first, socket
+  loss) can briefly differ from the backend. The overlay is intentionally
+  temporary and is replaced by REST/WebSocket snapshots or reverted on API
+  failure.
 
 ---
 

@@ -20,6 +20,7 @@ from app.models.queue_entry import QueueEntry
 from app.models.youtube_video import YouTubeVideo
 from app.schemas.youtube import YouTubeVideoData
 from app.services.youtube import (
+    YouTubeQuotaExceededError,
     YouTubeVideoUnavailableError,
     youtube_service,
 )
@@ -193,6 +194,64 @@ def test_submit_unavailable_video_is_not_found(
     response = _submit(client, session_body["id"], token, f"https://youtu.be/{VIDEO_A_ID}")
     assert response.status_code == 404
     assert "couldn't load" in response.json()["detail"]
+
+
+def test_submit_queues_oembed_metadata_when_data_api_quota_is_exhausted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_fetch(video_id: str) -> YouTubeVideoData:
+        raise YouTubeQuotaExceededError(video_id)
+
+    async def fake_oembed(video_id: str) -> YouTubeVideoData:
+        return _sample_metadata(
+            video_id, "Fallback Song", "Fallback Artist", duration_seconds=0
+        )
+
+    monkeypatch.setattr(youtube_service, "fetch_video_metadata", fake_fetch)
+    monkeypatch.setattr(youtube_service, "fetch_oembed_metadata", fake_oembed)
+    _, session_body, token = _setup(client)
+
+    response = _submit(client, session_body["id"], token, f"https://youtu.be/{VIDEO_A_ID}")
+    assert response.status_code == 201, response.text
+    entry = response.json()["entry"]
+    assert entry["title"] == "Fallback Song"
+    assert entry["channel"] == "Fallback Artist"
+    assert entry["duration_seconds"] == 0
+
+
+async def test_successful_submit_refreshes_previous_oembed_only_metadata(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, session: AsyncSession
+) -> None:
+    async def fake_quota_fetch(video_id: str) -> YouTubeVideoData:
+        raise YouTubeQuotaExceededError(video_id)
+
+    async def fake_oembed(video_id: str) -> YouTubeVideoData:
+        return _sample_metadata(
+            video_id, "Fallback Song", "Fallback Artist", duration_seconds=0
+        )
+
+    monkeypatch.setattr(youtube_service, "fetch_video_metadata", fake_quota_fetch)
+    monkeypatch.setattr(youtube_service, "fetch_oembed_metadata", fake_oembed)
+    _, session_body, token = _setup(client)
+    first = _submit(client, session_body["id"], token, f"https://youtu.be/{VIDEO_A_ID}")
+    assert first.status_code == 201, first.text
+    assert first.json()["entry"]["duration_seconds"] == 0
+
+    async def fake_full_fetch(video_id: str) -> YouTubeVideoData:
+        return _video_a()
+
+    monkeypatch.setattr(youtube_service, "fetch_video_metadata", fake_full_fetch)
+    second = _submit(client, session_body["id"], token, f"https://youtu.be/{VIDEO_A_ID}")
+    assert second.status_code == 201, second.text
+    assert second.json()["entry"]["title"] == "Song A"
+    assert second.json()["entry"]["duration_seconds"] == 213
+
+    stored_duration = await session.scalar(
+        select(YouTubeVideo.duration_seconds).where(
+            YouTubeVideo.youtube_video_id == VIDEO_A_ID
+        )
+    )
+    assert stored_duration == 213
 
 
 def test_submit_song_cap_conflicts(

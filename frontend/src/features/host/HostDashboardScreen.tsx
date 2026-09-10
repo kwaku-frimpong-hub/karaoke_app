@@ -3,10 +3,11 @@
 // host player (M12, D4), full queue (names, titles, durations), QR + join code,
 // and moderation actions driven by the M4/M7/M11 host endpoints.
 //
-// Queue/session state is always re-read from the backend; the screen subscribes
-// to the M10 realtime channel and only falls back to polling while disconnected
-// (D2, D5, B13). The embedded YouTube player plays the SINGING entry's video on
-// the host device and reports completion back via the M11 finish endpoint.
+// Queue/session state is always reconciled from the backend; the screen keeps a
+// temporary optimistic snapshot so host actions feel instant while REST/WebSocket
+// confirmation catches up (D2/D5/D53 follow-up). The embedded YouTube player
+// plays the SINGING entry's video on the host device and reports completion back
+// via the M11 finish endpoint.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 
@@ -30,8 +31,18 @@ import {
 import type { PlaybackState, QueueEntry, QueueSnapshot, Session } from '../../api/types'
 import { formatDuration } from '../../lib/format'
 import { loadHostIdentity } from '../../lib/hostToken'
+import {
+  type PlaybackAction,
+  predictEditEntry,
+  predictPlaybackAction,
+  predictRemoveEntry,
+  predictReorder,
+  predictSessionStatus,
+  withUpdatedEntry,
+} from '../../lib/predict'
 import { statusLabel } from '../../lib/session'
 import { useTransitionRemaining } from '../../lib/transition'
+import { useQueueStore } from '../../queue/context'
 import { useRealtime } from '../../ws/useRealtime'
 import YouTubePlayer from './YouTubePlayer'
 
@@ -77,16 +88,46 @@ function playbackLabel(state: PlaybackState | undefined): string {
   }
 }
 
+function actionLabel(action: PlaybackAction): string {
+  switch (action) {
+    case 'start':
+      return 'Starting playback'
+    case 'end':
+      return 'Ending song'
+    case 'skip':
+      return 'Skipping singer'
+    case 'finish':
+      return 'Finishing singer'
+    case 'advance':
+      return 'Advancing playback'
+    case 'pause':
+      return 'Pausing'
+    case 'resume':
+      return 'Resuming'
+  }
+}
+
 export default function HostDashboardScreen() {
   const { sessionId = '' } = useParams()
   const [identity] = useState(loadHostIdentity)
+  const queueStore = useQueueStore()
+  const {
+    displaySnapshot,
+    pendingAction,
+    setAuthoritativeSnapshot,
+    updateSnapshotStatus,
+    beginOptimisticSnapshot,
+    clearOptimisticSnapshot,
+    markOptimisticRemoval,
+    clearOptimisticRemoval,
+  } = queueStore
+  const snapshot = displaySnapshot?.session_id === sessionId ? displaySnapshot : null
 
   const [session, setSession] = useState<Session | null>(null)
-  const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null)
   const [qrSvg, setQrSvg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [playerError, setPlayerError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [pendingKeys, setPendingKeys] = useState<string[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editUrl, setEditUrl] = useState('')
   const [connected, setConnected] = useState(false)
@@ -96,14 +137,29 @@ export default function HostDashboardScreen() {
   const nowSingingRef = useRef<QueueEntry | null>(null)
   nowSingingRef.current = snapshot?.queue.find((e) => e.status === 'SINGING') ?? null
 
+  const isPending = useCallback(
+    (key: string): boolean => pendingKeys.includes(key),
+    [pendingKeys],
+  )
+
+  const beginPending = useCallback((key: string): void => {
+    setPendingKeys((prev) => (prev.includes(key) ? prev : [...prev, key]))
+  }, [])
+
+  const endPending = useCallback((key: string): void => {
+    setPendingKeys((prev) => prev.filter((candidate) => candidate !== key))
+  }, [])
+
   const refreshQueue = useCallback(async () => {
     try {
-      setSnapshot(await fetchQueueSnapshot(sessionId))
+      const nextSnapshot = await fetchQueueSnapshot(sessionId)
+      setAuthoritativeSnapshot(nextSnapshot)
+      setSession((prev) => (prev ? { ...prev, status: nextSnapshot.status } : prev))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the queue')
     }
-  }, [sessionId])
+  }, [sessionId, setAuthoritativeSnapshot])
 
   const refreshSession = useCallback(async () => {
     if (!identity) return
@@ -141,10 +197,12 @@ export default function HostDashboardScreen() {
   useRealtime(sessionId, identity?.token ?? '', {
     onEvent: (event) => {
       if (event.type === 'QueueUpdated') {
-        setSnapshot(event.snapshot)
+        setAuthoritativeSnapshot(event.snapshot)
+        setSession((prev) => (prev ? { ...prev, status: event.snapshot.status } : prev))
       } else if (event.type === 'SessionUpdated') {
         // Keep the status badge / ended card in sync without a refetch.
         setSession((prev) => (prev ? { ...prev, status: event.status } : prev))
+        updateSnapshotStatus(event.status)
       }
     },
     onStatusChange: (isConnected) => {
@@ -169,48 +227,64 @@ export default function HostDashboardScreen() {
   }
 
   async function handleStart() {
-    if (!identity || busy) return
-    setBusy('start')
+    if (!identity || isPending('session:start')) return
+    beginPending('session:start')
     setError(null)
+    setSession((prev) => (prev ? { ...prev, status: 'ACTIVE' } : prev))
+    if (snapshot) {
+      beginOptimisticSnapshot(predictSessionStatus(snapshot, 'ACTIVE'), 'Starting session')
+    }
     try {
-      await startSession(identity.token, sessionId)
-      await refreshSession()
+      const started = await startSession(identity.token, sessionId)
+      setSession(started)
+      if (snapshot) setAuthoritativeSnapshot({ ...snapshot, status: started.status })
     } catch (err) {
+      clearOptimisticSnapshot()
+      void refreshSession()
       setError(err instanceof Error ? err.message : 'Could not start the session')
     } finally {
-      setBusy(null)
+      endPending('session:start')
     }
   }
 
   async function handleEnd() {
-    if (!identity || busy) return
+    if (!identity || isPending('session:end')) return
     if (!window.confirm('End this karaoke session for good?')) return
-    setBusy('end')
+    beginPending('session:end')
     setError(null)
+    setSession((prev) => (prev ? { ...prev, status: 'ENDED' } : prev))
+    if (snapshot) {
+      beginOptimisticSnapshot(predictSessionStatus(snapshot, 'ENDED'), 'Ending session')
+    }
     try {
-      await endSession(identity.token, sessionId)
-      await refreshSession()
+      const endedSession = await endSession(identity.token, sessionId)
+      setSession(endedSession)
+      if (snapshot) setAuthoritativeSnapshot({ ...snapshot, status: endedSession.status })
     } catch (err) {
+      clearOptimisticSnapshot()
+      void refreshSession()
       setError(err instanceof Error ? err.message : 'Could not end the session')
     } finally {
-      setBusy(null)
+      endPending('session:end')
     }
   }
 
-  // M11/M13 playback controls: the endpoints return the authoritative snapshot,
-  // so the dashboard renders it directly (the realtime channel also delivers it).
-  async function handlePlayback(
-    action: 'start' | 'end' | 'skip' | 'finish' | 'advance' | 'pause' | 'resume',
-  ) {
-    if (!identity || busy) return
-    setBusy(action)
+  async function handlePlayback(action: PlaybackAction) {
+    const key = `play:${action}`
+    if (!identity || isPending(key)) return
+    beginPending(key)
     setError(null)
     setPlayerError(null)
+    if (snapshot) {
+      beginOptimisticSnapshot(predictPlaybackAction(snapshot, action), actionLabel(action))
+    }
+    if (action === 'pause') {
+      setSession((prev) => (prev ? { ...prev, status: 'PAUSED' } : prev))
+    } else if (action === 'resume') {
+      setSession((prev) => (prev ? { ...prev, status: 'ACTIVE' } : prev))
+    }
     try {
-      const callbacks: Record<
-        'start' | 'end' | 'skip' | 'finish' | 'advance' | 'pause' | 'resume',
-        () => Promise<QueueSnapshot>
-      > = {
+      const callbacks: Record<PlaybackAction, () => Promise<QueueSnapshot>> = {
         start: () => startPlayback(identity.token, sessionId),
         end: () => endPlayback(identity.token, sessionId),
         skip: () => skipPlayback(identity.token, sessionId),
@@ -219,66 +293,76 @@ export default function HostDashboardScreen() {
         pause: () => pausePlayback(identity.token, sessionId),
         resume: () => resumePlayback(identity.token, sessionId),
       }
-      const snapshot = await callbacks[action]()
-      setSnapshot(snapshot)
+      const nextSnapshot = await callbacks[action]()
+      setAuthoritativeSnapshot(nextSnapshot)
       // Keep the session badge in sync (pause/resume change the session status).
-      setSession((prev) => (prev ? { ...prev, status: snapshot.status } : prev))
+      setSession((prev) => (prev ? { ...prev, status: nextSnapshot.status } : prev))
     } catch (err) {
       // A stale advance (the deadline already passed elsewhere, e.g. another
       // tab) is a harmless 409 — the snapshot re-syncs via the realtime channel.
       if (!(action === 'advance' && err instanceof ApiError && err.status === 409)) {
+        clearOptimisticSnapshot()
+        if (action === 'pause' || action === 'resume') void refreshSession()
         setError(err instanceof Error ? err.message : `Could not ${action} playback`)
       }
     } finally {
-      setBusy(null)
+      endPending(key)
     }
   }
 
   async function handleRemove(entry: QueueEntry) {
-    if (!identity || busy) return
-    setBusy(`remove:${entry.id}`)
+    const key = `remove:${entry.id}`
+    if (!identity || isPending(key)) return
+    beginPending(key)
     setError(null)
+    markOptimisticRemoval(entry.id)
+    if (snapshot) beginOptimisticSnapshot(predictRemoveEntry(snapshot, entry.id), `Removing ${entry.title}`)
     try {
       await removeEntry(entry.id, identity.token)
       await refreshQueue()
     } catch (err) {
+      clearOptimisticRemoval(entry.id)
+      clearOptimisticSnapshot()
       setError(err instanceof Error ? err.message : 'Could not remove the entry')
     } finally {
-      setBusy(null)
+      endPending(key)
     }
   }
 
   // Per-round reorder (queue revision): move a participant up/down within the
   // current round. The backend returns the authoritative snapshot.
   async function handleReorder(index: number, direction: 'up' | 'down') {
-    if (!identity || busy || !snapshot) return
+    const key = `order:${index}:${direction}`
+    if (!identity || isPending(key) || !snapshot) return
     const swap = direction === 'up' ? index - 1 : index + 1
     if (swap < 0 || swap >= snapshot.queue.length) return
     const names = snapshot.queue.map((e) => e.participant_name)
     ;[names[index], names[swap]] = [names[swap], names[index]]
-    setBusy(`order:${index}`)
+    beginPending(key)
     setError(null)
+    beginOptimisticSnapshot(predictReorder(snapshot, names), 'Reordering queue')
     try {
       const updated = await reorderSession(identity.token, sessionId, names)
-      setSnapshot(updated)
+      setAuthoritativeSnapshot(updated)
     } catch (err) {
+      clearOptimisticSnapshot()
       setError(err instanceof Error ? err.message : 'Could not reorder the queue')
     } finally {
-      setBusy(null)
+      endPending(key)
     }
   }
 
   async function handleResetOrder() {
-    if (!identity || busy) return
-    setBusy('order:reset')
+    if (!identity || isPending('order:reset')) return
+    beginPending('order:reset')
     setError(null)
     try {
       const updated = await resetSessionOrder(identity.token, sessionId)
-      setSnapshot(updated)
+      setAuthoritativeSnapshot(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not reset the queue order')
     } finally {
-      setBusy(null)
+      endPending('order:reset')
     }
   }
 
@@ -289,20 +373,25 @@ export default function HostDashboardScreen() {
   }
 
   async function handleEditSave(entry: QueueEntry) {
-    if (!identity || busy) return
+    const key = `edit:${entry.id}`
+    if (!identity || isPending(key)) return
     if (editUrl.trim() === '') return
-    setBusy(`edit:${entry.id}`)
+    beginPending(key)
     setError(null)
     setPlayerError(null)
+    const trimmedUrl = editUrl.trim()
+    if (snapshot) beginOptimisticSnapshot(predictEditEntry(snapshot, entry.id, trimmedUrl), `Editing ${entry.title}`)
     try {
-      await editEntryVideo(entry.id, identity.token, editUrl.trim())
+      const updatedEntry = await editEntryVideo(entry.id, identity.token, trimmedUrl)
       setEditingId(null)
+      if (snapshot) setAuthoritativeSnapshot(withUpdatedEntry(snapshot, updatedEntry))
       await refreshQueue()
     } catch (err) {
       // E7: invalid replacement is rejected; the old URL is kept.
+      clearOptimisticSnapshot()
       setError(err instanceof Error ? err.message : 'Could not update the song')
     } finally {
-      setBusy(null)
+      endPending(key)
     }
   }
 
@@ -320,7 +409,8 @@ export default function HostDashboardScreen() {
     )
   }
 
-  const ended = session.status === 'ENDED'
+  const visibleStatus = snapshot?.status ?? session.status
+  const ended = visibleStatus === 'ENDED'
   const nowSinging = snapshot?.queue.find((e) => e.status === 'SINGING') ?? null
   const upNext =
     snapshot?.queue.find(
@@ -337,9 +427,14 @@ export default function HostDashboardScreen() {
       <header className="host-header">
         <div className="host-title">
           <h1>{session.name}</h1>
-          <p className={`badge badge-${session.status.toLowerCase()}`}>
-            {statusLabel(session.status)}
-          </p>
+          <div className="row host-nav">
+            <p className={`badge badge-${visibleStatus.toLowerCase()}`}>
+              {statusLabel(visibleStatus)}
+            </p>
+            <Link className="button-link" to={`/host/sessions/${sessionId}/participants`}>
+              Participants
+            </Link>
+          </div>
         </div>
         <div className="host-join">
           {qrSvg ? (
@@ -428,56 +523,59 @@ export default function HostDashboardScreen() {
             </div>
 
             <div className="host-actions">
-              {session.status === 'CREATED' ? (
-                <button onClick={() => void handleStart()} disabled={busy !== null}>
-                  {busy === 'start' ? 'Starting…' : 'Start session'}
+              {visibleStatus === 'CREATED' ? (
+                <button onClick={() => void handleStart()} disabled={isPending('session:start')}>
+                  {isPending('session:start') ? 'Starting…' : 'Start session'}
                 </button>
               ) : null}
               {!nowSinging && snapshot && snapshot.queue.length > 0 ? (
                 <button
                   onClick={() => void handlePlayback('start')}
-                  disabled={busy !== null}
+                  disabled={isPending('play:start')}
                 >
-                  {busy === 'start' ? 'Starting…' : 'Start next song'}
+                  {isPending('play:start') ? 'Starting…' : 'Start next song'}
                 </button>
               ) : null}
               <button
                 className="ghost"
                 onClick={() => void handlePlayback('skip')}
-                disabled={busy !== null || !nowSinging}
+                disabled={isPending('play:skip') || !nowSinging}
                 title={nowSinging ? undefined : 'No song is currently playing'}
               >
-                {busy === 'skip' ? 'Skipping…' : 'Skip'}
+                {isPending('play:skip') ? 'Skipping…' : 'Skip'}
               </button>
               <button
                 className="ghost"
                 onClick={() => void handlePlayback('finish')}
-                disabled={busy !== null || !nowSinging}
+                disabled={isPending('play:finish') || !nowSinging}
                 title={nowSinging ? undefined : 'No song is currently playing'}
               >
-                {busy === 'finish' ? 'Finishing…' : 'Finish'}
+                {isPending('play:finish') ? 'Finishing…' : 'Finish'}
               </button>
-              {session.status === 'ACTIVE' ? (
+              {visibleStatus === 'ACTIVE' ? (
                 <button
                   className="ghost"
                   onClick={() => void handlePlayback('pause')}
-                  disabled={busy !== null}
+                  disabled={isPending('play:pause')}
                 >
-                  {busy === 'pause' ? 'Pausing…' : 'Pause'}
+                  {isPending('play:pause') ? 'Pausing…' : 'Pause'}
                 </button>
               ) : null}
-              {session.status === 'PAUSED' ? (
+              {visibleStatus === 'PAUSED' ? (
                 <button
                   className="ghost"
                   onClick={() => void handlePlayback('resume')}
-                  disabled={busy !== null}
+                  disabled={isPending('play:resume')}
                 >
-                  {busy === 'resume' ? 'Resuming…' : 'Resume'}
+                  {isPending('play:resume') ? 'Resuming…' : 'Resume'}
                 </button>
               ) : null}
-              <button className="danger" onClick={() => void handleEnd()} disabled={busy !== null}>
-                {busy === 'end' ? 'Ending…' : 'End session'}
+              <button className="danger" onClick={() => void handleEnd()} disabled={isPending('session:end')}>
+                {isPending('session:end') ? 'Ending…' : 'End session'}
               </button>
+              {pendingAction ? (
+                <span className="badge badge-syncing host-sync-badge">Syncing · {pendingAction}</span>
+              ) : null}
             </div>
           </section>
 
@@ -492,10 +590,10 @@ export default function HostDashboardScreen() {
               <button
                 className="ghost"
                 onClick={() => void handleResetOrder()}
-                disabled={busy !== null}
+                disabled={isPending('order:reset')}
                 title="Back to join order for this round"
               >
-                Reset to join order
+                {isPending('order:reset') ? 'Resetting…' : 'Reset to join order'}
               </button>
             </div>
             {snapshot === null ? (
@@ -540,9 +638,9 @@ export default function HostDashboardScreen() {
                             <div className="row">
                               <button
                                 onClick={() => void handleEditSave(entry)}
-                                disabled={busy !== null || editUrl.trim() === ''}
+                                disabled={isPending(`edit:${entry.id}`) || editUrl.trim() === ''}
                               >
-                                {busy === `edit:${entry.id}` ? 'Saving…' : 'Save'}
+                                {isPending(`edit:${entry.id}`) ? 'Saving…' : 'Save'}
                               </button>
                               <button className="ghost" onClick={() => setEditingId(null)}>
                                 Cancel
@@ -558,7 +656,7 @@ export default function HostDashboardScreen() {
                             aria-label={`Move ${entry.participant_name} up`}
                             onClick={() => void handleReorder(index, 'up')}
                             disabled={
-                              busy !== null || isSinging || index === 0 || aboveIsSinging
+                              isPending(`order:${index}:up`) || isSinging || index === 0 || aboveIsSinging
                             }
                             title={
                               isSinging
@@ -573,7 +671,7 @@ export default function HostDashboardScreen() {
                             aria-label={`Move ${entry.participant_name} down`}
                             onClick={() => void handleReorder(index, 'down')}
                             disabled={
-                              busy !== null ||
+                              isPending(`order:${index}:down`) ||
                               isSinging ||
                               index === snapshot.queue.length - 1 ||
                               belowIsSinging
@@ -589,16 +687,16 @@ export default function HostDashboardScreen() {
                           <button
                             className="ghost"
                             onClick={() => beginEdit(entry)}
-                            disabled={busy !== null}
+                            disabled={isPending(`edit:${entry.id}`)}
                           >
                             Edit
                           </button>
                           <button
                             className="danger"
                             onClick={() => void handleRemove(entry)}
-                            disabled={busy !== null}
+                            disabled={isPending(`remove:${entry.id}`)}
                           >
-                            {busy === `remove:${entry.id}` ? 'Removing…' : 'Remove'}
+                            {isPending(`remove:${entry.id}`) ? 'Removing…' : 'Remove'}
                           </button>
                         </div>
                       ) : null}

@@ -1,11 +1,14 @@
 // API calls for the host dashboard (backend M3 host auth + M4/M5 sessions).
 import { apiRequest, apiRequestText } from './client'
 import type {
+  HostParticipantDetail,
   HostLoginResult,
   HostProfile,
+  Participant,
   QueueSnapshot,
   Session,
   SessionSummary,
+  SongSubmitResult,
 } from './types'
 
 const AUTH_BASE = '/api/v1/auth/host'
@@ -46,6 +49,44 @@ export function createSession(token: string, name?: string): Promise<Session> {
 
 export function fetchSession(token: string, sessionId: string): Promise<Session> {
   return apiRequest<Session>(`${SESSIONS_BASE}/${sessionId}`, { token })
+}
+
+export function fetchHostParticipants(
+  token: string,
+  sessionId: string,
+): Promise<HostParticipantDetail[]> {
+  return apiRequest<HostParticipantDetail[]>(
+    `${SESSIONS_BASE}/${sessionId}/participants`,
+    { token },
+  )
+}
+
+export function createHostParticipant(
+  token: string,
+  sessionId: string,
+  nickname: string,
+): Promise<Participant> {
+  return apiRequest<Participant>(`${SESSIONS_BASE}/${sessionId}/participants`, {
+    method: 'POST',
+    body: { nickname },
+    token,
+  })
+}
+
+export function addHostParticipantSong(
+  token: string,
+  sessionId: string,
+  participantId: string,
+  youtubeUrl: string,
+): Promise<SongSubmitResult> {
+  return apiRequest<SongSubmitResult>(
+    `${SESSIONS_BASE}/${sessionId}/participants/${participantId}/entries`,
+    {
+      method: 'POST',
+      body: { youtube_url: youtubeUrl },
+      token,
+    },
+  )
 }
 
 /** Host-facing round/session summary (M16): rounds played + per-participant

@@ -182,6 +182,8 @@ def test_start_promotes_first_entry_and_derives_playing(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["playback_state"] == "PLAYING"
+    assert body["cooldown_seconds"] == 10
+    assert body["countdown_seconds"] == 20
     statuses = [e["status"] for e in body["queue"]]
     assert statuses == ["SINGING", "WAITING"]
 

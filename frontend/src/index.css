@@ -18,6 +18,9 @@
   /* Accents */
   --primary: #5b8cff;
   --primary-ink: #0d1220;
+  --accent: #1ed760;
+  --accent-2: #ff4ecd;
+  --accent-3: #8b5cf6;
   --success: #3fae74;
   --danger: #b3374c;
   --danger-text: #ff7b7b;
@@ -37,6 +40,13 @@
   --radius: 10px;
   --radius-lg: 14px;
   --focus: #7aa2ff;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  --shadow-soft: 0 14px 36px rgba(0, 0, 0, 0.24);
+  --glow-primary: 0 0 32px rgba(91, 140, 255, 0.36);
+  --glow-accent: 0 0 36px rgba(30, 215, 96, 0.35);
+  --bg-glow-1: rgba(91, 140, 255, 0.22);
+  --bg-glow-2: rgba(255, 78, 205, 0.18);
+  --bg-glow-3: rgba(30, 215, 96, 0.12);
 
   /* Spacing scale (4px base) */
   --space-1: 4px;
@@ -65,7 +75,11 @@
 body {
   margin: 0;
   min-height: 100svh;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top left, var(--bg-glow-1), transparent 32rem),
+    radial-gradient(circle at 85% 10%, var(--bg-glow-2), transparent 28rem),
+    radial-gradient(circle at 50% 95%, var(--bg-glow-3), transparent 24rem),
+    var(--bg);
   color: var(--text);
 }
 

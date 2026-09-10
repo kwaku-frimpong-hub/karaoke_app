@@ -2,9 +2,10 @@
 
 - ``extract_video_id`` validates supported URL shapes (watch, youtu.be, embed,
   shorts) and returns the 11-char video ID, or ``None`` for anything else.
-- Metadata is fetched from the **YouTube Data API v3** (decision D33): the
-  oEmbed endpoint was rejected because it does not return duration, which the
-  preview and the long-video warning require.
+- Metadata is normally fetched from the **YouTube Data API v3** (decision D33),
+  but submit paths can fall back to keyless YouTube oEmbed when the Data API
+  quota/rate limit is exhausted (D53). oEmbed lacks duration, so degraded
+  metadata uses ``duration_seconds=0`` and the host remains final authority.
 - Long videos produce a warning, never a rejection (decision D34, rule B6).
 
 The service never assumes a video is a karaoke track; the host has final
@@ -22,6 +23,9 @@ from app.schemas.youtube import YouTubeVideoData
 
 #: YouTube Data API v3 endpoint for video snippet + contentDetails.
 _DATA_API_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+#: YouTube oEmbed endpoint used as a keyless fallback when Data API quota is hit.
+_OEMBED_URL = "https://www.youtube.com/oembed"
 
 #: A video ID is exactly 11 characters of the URL-safe base64 alphabet.
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -43,6 +47,10 @@ _DURATION_RE = re.compile(
 
 class YouTubeVideoUnavailableError(Exception):
     """Raised when metadata cannot be fetched for a valid video ID (E4)."""
+
+
+class YouTubeQuotaExceededError(Exception):
+    """Raised when YouTube refuses metadata fetches because quota/rate limits are hit."""
 
 
 class YouTubeServiceConfigurationError(Exception):
@@ -122,6 +130,24 @@ def _pick_thumbnail(thumbnails: dict[str, dict]) -> str:
     return ""
 
 
+def _is_quota_error(response: httpx.Response) -> bool:
+    """Return whether a YouTube Data API error body is a quota/rate-limit error."""
+    if response.status_code not in (403, 429):
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if payload.get("error", {}).get("status") == "RESOURCE_EXHAUSTED":
+        return True
+    errors = payload.get("error", {}).get("errors", [])
+    for item in errors:
+        reason = item.get("reason")
+        if reason in {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"}:
+            return True
+    return False
+
+
 class YouTubeService:
     """Fetches YouTube metadata via the Data API v3 (decision D33)."""
 
@@ -144,9 +170,10 @@ class YouTubeService:
         """Fetch snippet + contentDetails for ``video_id``.
 
         Raises ``YouTubeServiceConfigurationError`` when no API key is
-        configured, or ``YouTubeVideoUnavailableError`` for a non-200 response
-        or a video with no retrievable metadata (E4). ``client`` is optional
-        and lets tests inject an ``httpx.MockTransport``.
+        configured, ``YouTubeQuotaExceededError`` when YouTube quota/rate limits
+        are exhausted, or ``YouTubeVideoUnavailableError`` for other non-200
+        responses or a video with no retrievable metadata (E4). ``client`` is
+        optional and lets tests inject an ``httpx.MockTransport``.
 
         Results are cached in-process for ``KARAOKE_YOUTUBE_CACHE_TTL_SECONDS``
         (M17): the same video previewed/submitted repeatedly — very common for
@@ -182,6 +209,8 @@ class YouTubeService:
                 await http.aclose()
 
         if response.status_code != 200:
+            if _is_quota_error(response):
+                raise YouTubeQuotaExceededError(video_id)
             raise YouTubeVideoUnavailableError(video_id)
 
         try:
@@ -209,6 +238,71 @@ class YouTubeService:
             thumbnail_url=_pick_thumbnail(snippet.get("thumbnails") or {}),
         )
         self._cache[video_id] = (time.monotonic(), data)
+        return data
+
+    async def fetch_video_metadata_with_quota_fallback(
+        self, video_id: str, client: httpx.AsyncClient | None = None
+    ) -> YouTubeVideoData:
+        """Fetch metadata, falling back to keyless oEmbed on quota/rate limits.
+
+        Preview/edit paths still use ``fetch_video_metadata`` because they need
+        authoritative duration for the long-video warning. Submit paths use this
+        method so a temporary Data API quota exhaustion does not block queueing a
+        song. The fallback validates that oEmbed can see the video, but duration
+        is unknown and stored as 0 until a future Data API fetch refreshes it.
+        """
+        try:
+            if client is None:
+                return await self.fetch_video_metadata(video_id)
+            return await self.fetch_video_metadata(video_id, client=client)
+        except YouTubeQuotaExceededError:
+            if client is None:
+                return await self.fetch_oembed_metadata(video_id)
+            return await self.fetch_oembed_metadata(video_id, client=client)
+
+    async def fetch_oembed_metadata(
+        self, video_id: str, client: httpx.AsyncClient | None = None
+    ) -> YouTubeVideoData:
+        """Fetch keyless oEmbed metadata for ``video_id``.
+
+        Raises ``YouTubeVideoUnavailableError`` when oEmbed cannot load the
+        video. oEmbed does not expose duration; callers receive duration 0.
+        """
+        owns_client = client is None
+        http = client if client is not None else httpx.AsyncClient(timeout=10.0)
+        try:
+            try:
+                response = await http.get(
+                    _OEMBED_URL,
+                    params={
+                        "url": f"https://www.youtube.com/watch?v={video_id}",
+                        "format": "json",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                raise YouTubeVideoUnavailableError(video_id) from exc
+        finally:
+            if owns_client:
+                await http.aclose()
+
+        if response.status_code != 200:
+            raise YouTubeVideoUnavailableError(video_id)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise YouTubeVideoUnavailableError(video_id) from exc
+
+        title = payload.get("title") or ""
+        if not title:
+            raise YouTubeVideoUnavailableError(video_id)
+        data = YouTubeVideoData(
+            video_id=video_id,
+            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            title=title,
+            channel=payload.get("author_name") or "",
+            duration_seconds=0,
+            thumbnail_url=payload.get("thumbnail_url") or "",
+        )
         return data
 
 

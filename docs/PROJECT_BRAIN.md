@@ -81,7 +81,9 @@ Scan QR
 - One **modular monolith** backend (FastAPI + PostgreSQL). No microservices.
 - Backend/database is the **single source of truth** for queue order, current singer,
   round state, playback state, permissions, participant identity, and session state.
-- Frontend is a React + TypeScript SPA (Vite). It never owns authoritative state.
+- Frontend is a React + TypeScript SPA (Vite). It never owns authoritative state;
+  it can keep temporary optimistic overlays for instant song-add, playback,
+  moderation, and cancel UX, reconciled by backend snapshots (D53/D54).
 - Realtime delivery via **FastAPI WebSockets** (implemented M10). WebSockets are a delivery
   mechanism, **not** the source of truth; clients resync from the backend after reconnect.
 - **Queue rounds** (M10.1): the queue is round-robin — one song per participant per
@@ -171,7 +173,9 @@ song cap, sessions not tied to a browser) are in `docs/PRODUCT_SPEC.md` §8–§
 
 ## 8. Current milestone
 
-**M19 — PWA + mobile UX** (next; frontend). M18 is complete; see
+**M19 — PWA + mobile UX** (next; frontend). Active follow-up: host-assisted
+participant management for singers without phones (D52) — separate host screen,
+participant playlist view, and host add-song flow. M18 is complete; see
 `docs/DEV_BRAIN.md` for live status.
 
 ## 9. Completed milestones
@@ -182,6 +186,26 @@ song cap, sessions not tied to a browser) are in `docs/PRODUCT_SPEC.md` §8–§
   under host intervention, E21 in both directions, and host/participant
   reconnect recovery. 10 new tests (suite 240); pyright 0; tests-only, no code
   changes (no bugs surfaced).
+- **Host add-song reliability follow-up** (backend): host-created/no-phone
+  participants are no longer absence-tracked (`last_connected_at = NULL`) so the
+  M16 lazy cleanup does not cancel host-added songs after 30 minutes; QR-created
+  participants still use normal realtime-based cleanup. YouTube quota/rate-limit
+  failures are surfaced as HTTP 503 instead of the misleading video-unavailable
+  404. Regression coverage added in host participants, entries, and YouTube tests.
+- **Optimistic queue + keyless metadata follow-up** (backend + frontend): song
+  adds now feel client-side without changing backend authority. The frontend uses
+  keyless YouTube oEmbed + localStorage metadata cache and renders temporary
+  optimistic rows for participant and host add-song flows; submit paths still sync
+  to the backend in the background and reconcile from authoritative snapshots.
+  Backend submit/host-add degrade gracefully on Data API quota/rate limits by
+  falling back to oEmbed metadata (`duration_seconds=0`), while preview remains
+  strict for duration warnings.
+- **Optimistic playback/moderation follow-up** (backend + frontend): queue
+  snapshots expose per-session `cooldown_seconds`/`countdown_seconds`; the shared
+  frontend queue store now holds the authoritative snapshot plus a temporary
+  optimistic snapshot. Host playback, start/end, remove/reorder/edit, and
+  participant cancel update instantly, then reconcile via REST/WebSocket or
+  revert with an error on failure (D54).
 - **M17 — Security + abuse protection** (complete, backend): in-process fixed-
   window rate limiting on the public QR surface (`app/core/ratelimit.py`, D49) —
   join 10/min/IP, preview 20/min/IP, submit 20/min/IP → 429; a YouTube metadata
@@ -444,10 +468,18 @@ See `docs/DECISIONS.md` for the full, maintained list. Highlights:
   D47).
 - Round lifecycle (M16): absent-participant cleanup via `last_connected_at` +
   lazy GC-on-render (D48); snapshot round/participant summaries and a host-only
-  session summary endpoint.
+  session summary endpoint. Host-created/no-phone participants intentionally keep
+  `last_connected_at = NULL` and are not absence-tracked, because they cannot
+  refresh presence over WebSockets.
 - Security (M17): in-process per-IP rate limits on join/preview/submit (429
   beyond the window) and a YouTube metadata TTL cache for quota protection; the
-  rest of the abuse-protection checklist was already in place (D49).
+  service now distinguishes YouTube quota/rate-limit exhaustion as 503 instead
+  of a video-unavailable 404; the rest of the abuse-protection checklist was
+  already in place (D49).
+- Optimistic queue/playback UX (D53/D54): client-side oEmbed metadata,
+  temporary optimistic rows, and temporary optimistic snapshots make adds and
+  host controls instant; backend/database still owns order, rounds, playback,
+  permissions, identity, session state, and durable queue persistence.
 - No user-visible feature in M0 beyond a health check.
 
 ## 12. Commands for running / testing

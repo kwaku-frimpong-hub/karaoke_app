@@ -35,6 +35,10 @@ class NicknameTakenError(Exception):
     """Raised when the nickname is already used in the session (case-insensitive)."""
 
 
+class ParticipantNotFoundError(Exception):
+    """Raised when a participant does not exist in the expected session."""
+
+
 def normalize_join_code(join_code: str) -> str:
     """Normalize a join code for lookup (codes are uppercase, D27)."""
     return join_code.strip().upper()
@@ -127,6 +131,67 @@ class ParticipantService:
             raise NicknameTakenError(display_nickname) from exc
         await session.refresh(participant)
         return participant, raw_token
+
+    async def register_in_session(
+        self, session: AsyncSession, session_id: uuid.UUID, nickname: str
+    ) -> tuple[Participant, str]:
+        """Host-created participant for a known session id.
+
+        Mirrors the public join registration rules: nicknames are normalized and
+        unique per session, ended sessions reject new participants, and a token
+        hash is still stored even though the host UI does not expose the raw
+        token. ``last_connected_at`` stays ``None`` because host-created
+        participants have no device/WebSocket presence to refresh; the host
+        manages their participation explicitly.
+        """
+        karaoke = await session.scalar(select(Session).where(Session.id == session_id))
+        if karaoke is None:
+            raise SessionNotFoundError(session_id)
+        if karaoke.status is SessionStatus.ENDED:
+            raise SessionEndedError(karaoke.id)
+
+        display_nickname = _normalize_nickname(nickname)
+        nickname_lower = display_nickname.lower()
+
+        existing = await session.scalar(
+            select(Participant.id).where(
+                Participant.session_id == karaoke.id,
+                Participant.nickname_lower == nickname_lower,
+            )
+        )
+        if existing is not None:
+            raise NicknameTakenError(display_nickname)
+
+        raw_token = generate_auth_token()
+        participant = Participant(
+            session_id=karaoke.id,
+            nickname=display_nickname,
+            nickname_lower=nickname_lower,
+            token_hash=hash_auth_token(raw_token),
+            last_connected_at=None,
+        )
+        session.add(participant)
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise NicknameTakenError(display_nickname) from exc
+        await session.refresh(participant)
+        return participant, raw_token
+
+    async def get_in_session(
+        self, session: AsyncSession, session_id: uuid.UUID, participant_id: uuid.UUID
+    ) -> Participant:
+        """Return a participant in a session, or raise ``ParticipantNotFoundError``."""
+        participant = await session.scalar(
+            select(Participant).where(
+                Participant.id == participant_id,
+                Participant.session_id == session_id,
+            )
+        )
+        if participant is None:
+            raise ParticipantNotFoundError(participant_id)
+        return participant
 
     async def leave(self, session: AsyncSession, participant: Participant) -> bool:
         """Delete the participant and all their songs (leave the night early).

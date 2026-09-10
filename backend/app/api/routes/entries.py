@@ -56,6 +56,7 @@ from app.services.playback import playback_service
 from app.api.routes.playback import _notify_next_singer
 from app.services.session import SessionNotFoundError, session_service
 from app.services.youtube import (
+    YouTubeQuotaExceededError,
     YouTubeServiceConfigurationError,
     YouTubeVideoUnavailableError,
     extract_video_id,
@@ -99,7 +100,9 @@ async def _session_for_participant(
     return karaoke
 
 
-async def _fetch_video_data(youtube_url: str) -> YouTubeVideoData:
+async def _fetch_video_data(
+    youtube_url: str, *, allow_quota_fallback: bool = False
+) -> YouTubeVideoData:
     """Validate a URL and fetch metadata, translating failures to HTTP errors."""
     video_id = extract_video_id(youtube_url)
     if video_id is None:
@@ -108,10 +111,17 @@ async def _fetch_video_data(youtube_url: str) -> YouTubeVideoData:
             detail="that doesn't look like a valid YouTube link",
         )
     try:
+        if allow_quota_fallback:
+            return await youtube_service.fetch_video_metadata_with_quota_fallback(video_id)
         return await youtube_service.fetch_video_metadata(video_id)
     except YouTubeServiceConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except YouTubeQuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="YouTube quota is temporarily exhausted; try again later",
         ) from exc
     except YouTubeVideoUnavailableError as exc:
         raise HTTPException(
@@ -175,7 +185,7 @@ async def submit_song(
     Rate-limited per IP (M17): submission re-fetches metadata (YouTube quota).
     """
     await _session_for_participant(session, session_id, participant)
-    data = await _fetch_video_data(payload.youtube_url)
+    data = await _fetch_video_data(payload.youtube_url, allow_quota_fallback=True)
 
     try:
         entry, duplicate = await queue_service.submit(session, participant, data)

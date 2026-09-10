@@ -11,7 +11,70 @@ of every milestone. The persistent context lives in `PROJECT_BRAIN.md`.
 
 ## Current task
 
-**Participant "leave session" feature (D50) — IMPLEMENTED, verified, DEPLOYED via CI.**
+**Optimistic playback/moderation follow-up (D54) — IMPLEMENTED, verification in progress.**
+
+This follow-up extends the D53 instant-add UX to the rest of the live queue
+surface. Queue snapshots now expose `cooldown_seconds` and `countdown_seconds`,
+and the shared frontend queue store holds the last authoritative snapshot plus a
+temporary optimistic snapshot. Host dashboard actions — session start/end,
+playback start/end/finish/skip/advance/pause/resume, host remove/reorder/edit —
+render immediately, fire the backend mutation in the background, reconcile from
+REST/WebSocket snapshots, and revert to the last authoritative snapshot on
+failure. Participant cancel also hides the row immediately and restores it on
+failure. The host UI shows a subtle syncing badge while a prediction is pending.
+
+Previous task: **Optimistic queue + keyless metadata (D53) — IMPLEMENTED, verified locally; host participant UI follow-up applied.**
+
+Phase 2 moved song adding to an optimistic/local-first UX while keeping the
+backend/database authoritative. The frontend now has `QueueProvider`/
+`useQueueStore` for temporary optimistic rows, keyless YouTube oEmbed metadata
+(`frontend/src/lib/youtube.ts`) with localStorage caching, an instant participant
+add-song card, and optimistic host participant add rows. The backend submit paths
+now degrade gracefully on YouTube Data API quota/rate-limit exhaustion: participant
+submit and host participant add fall back to server-side oEmbed metadata
+(`duration_seconds=0`) instead of failing, while preview stays strict so duration
+warnings remain authoritative. If a later Data API fetch succeeds, a previous
+oEmbed-only video row is refreshed with the real duration/title/channel/thumbnail.
+Verification: backend suite **283 passed**; `uv run pyright` reports 0 errors;
+frontend `npm run typecheck`, `npm run lint`, and `npm run build` all pass. PWA
+work moves after this follow-up.
+
+Host participant UI follow-up: `/host/sessions/{id}/participants` now opens with a
+grid of singer tiles/cards. The host clicks a singer to open a selected-singer
+detail panel, then adds YouTube links to that singer's playlist there. This keeps
+the screen from showing every add-song form at once. Frontend verification after
+this UI follow-up: `npm run typecheck`, `npm run lint`, and `npm run build` pass.
+
+Previous task: **Host add-song reliability follow-up — IMPLEMENTED, verified locally.**
+
+Real-use feedback showed phone participants could keep adding songs while host-added
+no-phone participants eventually did not appear in the queue. Root cause: the D52
+host-created participants were given `last_connected_at` at creation but never had a
+device/WebSocket to refresh it, so the M16 lazy absent cleanup cancelled their
+WAITING songs after the cleanup window, including songs submitted by the host right
+before the broadcast snapshot. Fix: host-created/no-phone participants now store
+`last_connected_at = None` and are not absence-tracked; QR-created participants keep
+normal cleanup. YouTube Data API quota/rate-limit failures are also surfaced as a
+distinct 503 instead of the misleading "video unavailable" 404. Regression tests
+were added to `backend/tests/test_host_participants.py`, `backend/tests/test_entries.py`,
+and `backend/tests/test_youtube.py`. Verification: backend suite **278 passed**;
+`uv run pyright` reports 0 errors.
+
+Previous task: **Host-assisted participant management (D52) — IMPLEMENTED,
+verified, pushed/deployed.**
+
+The host gets a separate `/host/sessions/{id}/participants` screen to keep the
+playback dashboard mostly unchanged. It lists each participant and their
+non-terminal queued playlist, lets the host create a participant by nickname, and
+lets the host add a YouTube URL directly to any participant. Backend endpoints:
+`GET/POST /api/v1/sessions/{id}/participants` and
+`POST /api/v1/sessions/{id}/participants/{participantId}/entries`. Direct add
+reuses the existing metadata fetch, song cap, round-robin assignment, duplicate
+notice, and realtime `QueueUpdated` broadcast. Tests added:
+`backend/tests/test_host_participants.py`.
+
+Earlier task: **Participant "leave session" feature (D50) — IMPLEMENTED,
+verified, DEPLOYED via CI.**
 
 A participant can delete themselves from the session (`POST /api/v1/sessions/{id}/leave`):
 their identity and all their songs are removed via the DB cascade (nickname freed,
@@ -46,6 +109,17 @@ keeps the mobile topbar visible and shows a styled loading card instead of a bar
 "Loading queue…" message. Host dashboard initial loading now uses the wide
 host/projector layout instead of the mobile participant container. Frontend checks:
 `npm run typecheck`, `npm run lint`, `npm run build`.
+
+## Frontend visual refresh follow-up
+
+The frontend now uses a more energetic karaoke/music-app visual treatment: richer
+dark gradients, glowing primary actions, glassy cards, playlist-style queue rows
+with thumbnails, and a participant queue view with **Live queue / Your songs** tabs.
+The participant "Now singing" card renders like a music player with a spinning
+record-style thumbnail (disabled for reduced-motion users). Host screens keep their
+existing workflow but get the same modernized surfaces, stronger projector contrast,
+and a more polished participant-management view. Frontend checks: `npm run
+typecheck`, `npm run lint`, `npm run build`.
 
 ## M18 scope (plan.md §M18)
 

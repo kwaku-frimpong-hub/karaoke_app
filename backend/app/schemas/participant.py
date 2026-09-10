@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.domain.queue_entry import QueueEntryStatus
 from app.domain.session import SessionStatus
 
 #: Nickname rules (B14/D16): required, trimmed, 1-20 characters.
@@ -50,3 +51,29 @@ class ParticipantJoinResponse(BaseModel):
     token_type: Literal["bearer"] = "bearer"
     session: JoinSessionResponse
     participant: ParticipantResponse
+
+
+class HostParticipantEntryResponse(BaseModel):
+    """Host view of one queued song in a participant's playlist."""
+
+    id: uuid.UUID
+    round_number: int
+    position: int | None
+    status: QueueEntryStatus
+    video_id: str
+    youtube_url: str
+    title: str
+    channel: str
+    duration_seconds: int
+    thumbnail_url: str
+    created_at: datetime
+
+
+class HostParticipantDetailResponse(BaseModel):
+    """Host view of a participant and their queued playlist."""
+
+    id: uuid.UUID
+    session_id: uuid.UUID
+    nickname: str
+    created_at: datetime
+    entries: list[HostParticipantEntryResponse]

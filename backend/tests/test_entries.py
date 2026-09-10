@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.schemas.youtube import YouTubeVideoData
 from app.services.youtube import (
+    YouTubeQuotaExceededError,
     YouTubeServiceConfigurationError,
     YouTubeVideoUnavailableError,
     youtube_service,
@@ -196,6 +197,20 @@ def test_preview_unavailable_video_is_not_found(
     response = _preview(client, session_id, token)
     assert response.status_code == 404
     assert "couldn't load" in response.json()["detail"]
+
+
+def test_preview_quota_error_is_service_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, session_id, _ = _create_session_with_participant(client)
+
+    async def fake_fetch(video_id: str) -> YouTubeVideoData:
+        raise YouTubeQuotaExceededError(video_id)
+
+    monkeypatch.setattr(youtube_service, "fetch_video_metadata", fake_fetch)
+    response = _preview(client, session_id, token)
+    assert response.status_code == 503
+    assert "quota" in response.json()["detail"]
 
 
 def test_preview_unconfigured_service_is_unavailable(

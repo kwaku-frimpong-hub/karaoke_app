@@ -14,7 +14,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api.routes import auth, entries, health, join, playback, realtime, sessions
+from app.api.routes import (
+    auth,
+    entries,
+    health,
+    join,
+    participants,
+    playback,
+    realtime,
+    sessions,
+)
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 
@@ -62,6 +71,7 @@ def create_app(static_dir: str | None = None) -> FastAPI:
     application.include_router(auth.router)
     application.include_router(sessions.router)
     application.include_router(join.router)
+    application.include_router(participants.router)
     application.include_router(entries.router)
     application.include_router(entries.entry_router)
     application.include_router(realtime.router)

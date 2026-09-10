@@ -64,7 +64,10 @@ class QueueSnapshotResponse(BaseModel):
     while an entry is ``SINGING``, ``IDLE`` when idle, and ``COOLDOWN``/
     ``COUNTDOWN`` during an automatic transition. ``transition_until`` is the
     absolute deadline of the current transition phase (None otherwise) and
-    ``transition_remaining_seconds`` its remaining time for countdown display.
+    ``transition_remaining_seconds`` its remaining time for countdown display;
+    ``cooldown_seconds``/``countdown_seconds`` expose the per-session timing
+    configuration so clients can render temporary optimistic transition UI while
+    awaiting the next authoritative snapshot.
     ``rounds_completed`` and ``participants`` (per-participant remaining-song
     counts) are the M16 round summaries.
     """
@@ -76,5 +79,7 @@ class QueueSnapshotResponse(BaseModel):
     playback_state: PlaybackState
     transition_until: datetime | None
     transition_remaining_seconds: float | None
+    cooldown_seconds: int
+    countdown_seconds: int
     participants: list[QueueParticipant]
     queue: list[QueueEntryResponse]

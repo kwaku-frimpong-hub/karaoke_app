@@ -9,6 +9,7 @@ import pytest
 
 from app.schemas.youtube import YouTubeVideoData
 from app.services.youtube import (
+    YouTubeQuotaExceededError,
     YouTubeService,
     YouTubeServiceConfigurationError,
     YouTubeVideoUnavailableError,
@@ -118,6 +119,30 @@ def _client_for(response: dict, status_code: int = 200) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+def _quota_response() -> dict:
+    return {
+        "error": {
+            "errors": [
+                {
+                    "domain": "youtube.quota",
+                    "reason": "quotaExceeded",
+                    "message": "quota exceeded",
+                }
+            ],
+            "code": 403,
+            "message": "quota exceeded",
+        }
+    }
+
+
+def _oembed_response() -> dict:
+    return {
+        "title": "Rick Astley - Never Gonna Give You Up",
+        "author_name": "Rick Astley",
+        "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    }
+
+
 async def test_fetch_metadata_parses_data_api_response() -> None:
     service = YouTubeService(api_key="test-key")
     async with _client_for(_video_api_response()) as client:
@@ -150,6 +175,76 @@ async def test_fetch_metadata_http_error_raises_unavailable() -> None:
     async with _client_for({}, status_code=403) as client:
         with pytest.raises(YouTubeVideoUnavailableError):
             await service.fetch_video_metadata(VIDEO_ID, client=client)
+
+
+async def test_fetch_metadata_quota_error_raises_quota_exceeded() -> None:
+    service = YouTubeService(api_key="test-key")
+    async with _client_for(_quota_response(), status_code=403) as client:
+        with pytest.raises(YouTubeQuotaExceededError):
+            await service.fetch_video_metadata(VIDEO_ID, client=client)
+
+
+async def test_fetch_metadata_rate_limit_error_raises_quota_exceeded() -> None:
+    response = {
+        "error": {
+            "errors": [
+                {
+                    "domain": "usageLimits",
+                    "reason": "rateLimitExceeded",
+                    "message": "rate limit exceeded",
+                }
+            ],
+            "code": 429,
+            "message": "rate limit exceeded",
+            "status": "RESOURCE_EXHAUSTED",
+        }
+    }
+    service = YouTubeService(api_key="test-key")
+    async with _client_for(response, status_code=429) as client:
+        with pytest.raises(YouTubeQuotaExceededError):
+            await service.fetch_video_metadata(VIDEO_ID, client=client)
+
+
+async def test_fetch_oembed_metadata_returns_degraded_metadata() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "www.youtube.com"
+        assert request.url.params["format"] == "json"
+        assert VIDEO_ID in request.url.params["url"]
+        return httpx.Response(200, json=_oembed_response())
+
+    service = YouTubeService(api_key="test-key")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        data = await service.fetch_oembed_metadata(VIDEO_ID, client=client)
+
+    assert data.video_id == VIDEO_ID
+    assert data.youtube_url == f"https://www.youtube.com/watch?v={VIDEO_ID}"
+    assert data.title == "Rick Astley - Never Gonna Give You Up"
+    assert data.channel == "Rick Astley"
+    assert data.thumbnail_url == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    assert data.duration_seconds == 0
+
+
+async def test_fetch_metadata_with_quota_fallback_uses_oembed() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host is not None
+        calls.append(request.url.host)
+        if request.url.host == "www.googleapis.com":
+            return httpx.Response(403, json=_quota_response())
+        if request.url.host == "www.youtube.com":
+            return httpx.Response(200, json=_oembed_response())
+        raise AssertionError(f"unexpected host {request.url.host}")
+
+    service = YouTubeService(api_key="test-key")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        data = await service.fetch_video_metadata_with_quota_fallback(
+            VIDEO_ID, client=client
+        )
+
+    assert calls == ["www.googleapis.com", "www.youtube.com"]
+    assert data.title == "Rick Astley - Never Gonna Give You Up"
+    assert data.duration_seconds == 0
 
 
 async def test_fetch_metadata_missing_title_raises_unavailable() -> None:

@@ -367,11 +367,22 @@ EOF
 
 - The snapshot exposes `transition_until` and `transition_remaining_seconds`;
   the countdown auto-advances and a reopened tab with an overdue deadline
-  self-recovers (no background timers, D47).
+  self-recovers (no background timers, D47). It also exposes per-session
+  `cooldown_seconds` and `countdown_seconds` so the frontend can render temporary
+  optimistic transition deadlines before REST/WebSocket reconciliation (D54).
 - Host `skip`/`finish` skip the cooldown and go straight to the countdown (D20);
   `start` cancels a pending transition; `pause` cancels it too (E22).
 - Covered by `backend/tests/test_playback.py` (8 transition tests) and the live
   smoke above.
+
+## Optimistic UI smoke (D54)
+
+With backend + frontend running, open a host dashboard and a participant queue in
+separate browser windows. Press **Finish**, **Skip**, **Remove**, reorder arrows,
+and participant **Cancel**: the visible queue/playback state should update
+immediately and show a small syncing badge until the REST/WebSocket snapshot
+arrives. Temporarily block the request in DevTools/network to verify the UI
+reverts to the previous authoritative snapshot and shows an error.
 
 ## Host moderation verification (M14)
 
@@ -482,7 +493,10 @@ EOF
   channel for `KARAOKE_ABSENT_PARTICIPANT_CLEANUP_SECONDS` (default 30 min) has
   their remaining `WAITING` songs cancelled when the snapshot is rendered (only
   for started sessions; an absent `NEXT`/`SINGING` singer stays the host's skip
-  call). Covered by `backend/tests/test_rounds.py`.
+  call). Host-created/no-phone participants are intentionally not absence-tracked
+  (`last_connected_at = NULL`) because they have no WebSocket presence to refresh;
+  their songs stay host-managed. Covered by `backend/tests/test_rounds.py` and
+  `backend/tests/test_host_participants.py`.
 - The snapshot reports `rounds_completed` and per-participant `remaining_songs`;
   the host-only `/sessions/{id}/summary` reports submitted/sung/remaining.
 
@@ -513,6 +527,24 @@ EOF
   are served from the 1 h metadata cache (quota saver).
 - Covered by `backend/tests/test_security.py` (rate-limit tests) and
   `backend/tests/test_youtube.py` (2 cache tests).
+
+## Optimistic queue + oEmbed verification (D53)
+
+- Participant add flow: paste a supported YouTube URL, click **Show song**; the
+  keyless oEmbed card should render without using the backend preview endpoint.
+  If YouTube's oEmbed endpoint returns 401/404/CORS/network failure, the card may
+  show generic `Song syncing…` metadata, but the add must still POST to the
+  backend.
+  Click **Add to Queue**; the success card appears immediately and the queue shows
+  a dashed `Syncing` row until the backend snapshot confirms the real entry.
+- Host participant add flow: on `/host/sessions/{id}/participants`, paste a URL
+  under a singer; the playlist shows the dashed `Syncing` row immediately, then
+  reconciles to the authoritative entry after the POST/snapshot.
+- Data API quota fallback: participant submit and host add return 201 with oEmbed
+  metadata (`duration_seconds=0`) when Data API quota is exhausted; preview still
+  returns 503 because duration warnings require Data API metadata. Covered by
+  `backend/tests/test_queue.py`, `backend/tests/test_host_participants.py`, and
+  `backend/tests/test_youtube.py`.
 
 ## Concurrency / failure verification (M18)
 

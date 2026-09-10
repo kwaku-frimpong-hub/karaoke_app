@@ -1,20 +1,35 @@
 // Song submission screen (PRODUCT_SPEC §6.3-6.4): paste a YouTube URL, review
-// the metadata preview, then add it to the queue (backend M6/M7).
+// instant keyless metadata, then optimistically add it to the queue.
 import { type FormEvent, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 
-import { fetchPreview, submitSong } from '../../api/entries'
-import type { SongPreview, SongSubmitResult } from '../../api/types'
+import type { SongSubmitResult } from '../../api/types'
 import { formatDuration } from '../../lib/format'
 import { loadIdentity } from '../../lib/token'
+import { type ClientVideoMetadata, fetchOEmbedMetadata } from '../../lib/youtube'
+import { useQueueStore } from '../../queue/context'
+
+interface InstantSuccess {
+  title: string
+  syncing: boolean
+  notice: string | null
+}
+
+function durationLabel(durationSeconds: number | null): string {
+  return durationSeconds === null || durationSeconds === 0
+    ? 'duration resolving'
+    : formatDuration(durationSeconds)
+}
 
 export default function SubmitSongScreen() {
   const { joinCode = '' } = useParams()
   const identity = loadIdentity()
+  const queueStore = useQueueStore()
 
   const [url, setUrl] = useState('')
-  const [preview, setPreview] = useState<SongPreview | null>(null)
+  const [preview, setPreview] = useState<ClientVideoMetadata | null>(null)
   const [result, setResult] = useState<SongSubmitResult | null>(null)
+  const [instantSuccess, setInstantSuccess] = useState<InstantSuccess | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -33,8 +48,10 @@ export default function SubmitSongScreen() {
     setLoading(true)
     setError(null)
     setPreview(null)
+    setResult(null)
+    setInstantSuccess(null)
     try {
-      const data = await fetchPreview(me.sessionId, me.token, url.trim())
+      const data = await fetchOEmbedMetadata(url.trim())
       setPreview(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load this video')
@@ -45,15 +62,25 @@ export default function SubmitSongScreen() {
 
   async function handleAdd() {
     if (!preview) return
-    setLoading(true)
     setError(null)
+    setResult(null)
+    setInstantSuccess({ title: preview.title, syncing: true, notice: null })
     try {
-      const data = await submitSong(me.sessionId, me.token, preview.youtube_url)
+      const data = await queueStore.addParticipantSong({
+        sessionId: me.sessionId,
+        token: me.token,
+        participantName: me.nickname,
+        metadata: preview,
+      })
       setResult(data)
+      setInstantSuccess({
+        title: data.entry.title,
+        syncing: false,
+        notice: data.notice,
+      })
     } catch (err) {
+      setInstantSuccess(null)
       setError(err instanceof Error ? err.message : 'Could not add the song')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -77,7 +104,7 @@ export default function SubmitSongScreen() {
           />
         </div>
         <button type="submit" disabled={loading || url.trim() === ''}>
-          {loading && !preview ? 'Checking…' : 'Preview'}
+          {loading ? 'Loading song…' : 'Show song'}
         </button>
       </form>
 
@@ -85,19 +112,17 @@ export default function SubmitSongScreen() {
 
       {preview && !result ? (
         <div className="card">
-          {preview.thumbnail_url ? (
-            <img src={preview.thumbnail_url} alt="" className="thumb" />
+          {preview.thumbnailUrl ? (
+            <img src={preview.thumbnailUrl} alt="" className="thumb" />
           ) : null}
           <h2>{preview.title}</h2>
           <p className="muted">
-            {preview.channel} &middot; {formatDuration(preview.duration_seconds)}
+            {preview.channel || 'YouTube'} &middot; {durationLabel(preview.durationSeconds)}
           </p>
-          {preview.is_long && preview.warning ? (
-            <p className="warn-text">{preview.warning}</p>
-          ) : null}
+          <p className="muted">Duration will resolve from the live queue after sync.</p>
           <div className="row">
-            <button onClick={handleAdd} disabled={loading}>
-              {loading ? 'Adding…' : 'Add to Queue'}
+            <button onClick={() => void handleAdd()} disabled={instantSuccess?.syncing === true}>
+              {instantSuccess?.syncing ? 'Syncing…' : 'Add to Queue'}
             </button>
             <button className="ghost" onClick={() => setPreview(null)}>
               Try Another URL
@@ -106,14 +131,19 @@ export default function SubmitSongScreen() {
         </div>
       ) : null}
 
-      {result ? (
+      {instantSuccess ? (
         <div className="card success">
           <h2>Added!</h2>
-          <p>
-            &ldquo;{result.entry.title}&rdquo; is position{' '}
-            <strong>{result.entry.position ?? '—'}</strong> in the queue.
-          </p>
-          {result.notice ? <p className="warn-text">{result.notice}</p> : null}
+          {result ? (
+            <p>
+              &ldquo;{result.entry.title}&rdquo; is position{' '}
+              <strong>{result.entry.position ?? '—'}</strong> in the queue.
+            </p>
+          ) : (
+            <p>&ldquo;{instantSuccess.title}&rdquo; is showing in the queue while it syncs.</p>
+          )}
+          {instantSuccess.syncing ? <p className="badge badge-syncing">Syncing</p> : null}
+          {instantSuccess.notice ? <p className="warn-text">{instantSuccess.notice}</p> : null}
           <div className="row">
             <Link className="button-link" to={`/join/${joinCode}/queue`}>
               View Queue
@@ -123,6 +153,7 @@ export default function SubmitSongScreen() {
               onClick={() => {
                 setResult(null)
                 setPreview(null)
+                setInstantSuccess(null)
                 setUrl('')
               }}
             >
